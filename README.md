@@ -40,6 +40,7 @@ src/
 ## What's included
 
 - **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
+- **Email** — `onEmail` handler parses inbound mail, routes it through the AI, and replies via the Email Service binding
 - **Image input** — Drag-and-drop, paste, or click to attach images for vision-capable models
 - **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
 - **Scheduling** — one-time, delayed, and recurring (cron) tasks
@@ -217,6 +218,31 @@ Create a `.env` file with your API key:
 ANTHROPIC_API_KEY=your-key-here
 ```
 
+## Email
+
+The agent can send and receive email through [Cloudflare Email Service](https://developers.cloudflare.com/email-service/). Inbound mail is parsed with `postal-mime`, fed into the chat history (so it appears in the UI), and the AI's reply is sent back to the original sender.
+
+### One-time setup
+
+1. **Onboard a domain** in the Cloudflare dashboard under **Compute & AI → Email Service** and add the SPF/DKIM DNS records.
+2. **Add an Email Routing rule** that delivers inbound mail to this Worker (`Email → Email Routing → Routing rules → Send to a Worker`).
+
+### How it works
+
+- `src/server.ts` adds an `email()` handler to the default export that calls `routeAgentEmail` with `createCatchAllEmailResolver("ChatAgent", "default")` — every inbound message is routed to a single `ChatAgent` instance (a "shared inbox" pattern).
+- `ChatAgent.onEmail` parses the message with `postal-mime`, skips RFC 3834 auto-replies via `isAutoReplyEmail`, and calls `this.saveMessages(...)` so the email appears as a user turn. `saveMessages` triggers the existing `onChatMessage` flow, then we reply to the original sender via `this.replyToEmail` with the assistant's text.
+
+### Try it
+
+After deploying and pointing your Routing rule at the Worker, send mail to any address on your domain — for example `hello@yourdomain.com`. Open the chat UI and you'll see the email appear as a user message followed by the assistant's response, and the sender will receive the reply in their inbox.
+
+### Switch routing strategies
+
+- **Address-based** — replace the resolver with `createAddressBasedEmailResolver("ChatAgent")` to route `ChatAgent+user123@yourdomain.com` to per-user agent instances.
+- **Secure replies** — pass a `secret` to `replyToEmail` and combine with `createSecureReplyEmailResolver(secret)` to verify HMAC-signed reply headers. Store the secret as a Worker [secret](https://developers.cloudflare.com/workers/configuration/secrets/) and read it from `this.env`.
+
+See the [Agents email docs](https://developers.cloudflare.com/agents/api-reference/email/) for the full resolver matrix.
+
 ## Deploy
 
 ```bash
@@ -230,6 +256,8 @@ Your agent is live on Cloudflare's global network. Messages persist in SQLite, s
 - [Agents SDK documentation](https://developers.cloudflare.com/agents/)
 - [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
 - [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
+- [Email for Agents](https://developers.cloudflare.com/agents/api-reference/email/)
+- [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)
 - [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
 
 ## License
