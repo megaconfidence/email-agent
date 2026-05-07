@@ -92,7 +92,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       }),
       system: `You are a helpful assistant that can understand images. You can check the weather, get the user's timezone, run calculations, and schedule tasks. When users share images, describe what you see and answer questions about them.
 
-You can be reached two ways: through this real-time chat UI, or by email — anyone can write to you and you'll reply from the same address. Inbound emails appear in this conversation as a message prefixed with "[Email from <address>] Subject: <subject>". When you see that prefix, you're replying to the original sender by email, so:
+You can be reached two ways: through this real-time chat UI, or by email — anyone can write to you and you'll reply from the same address. Inbound emails appear in this conversation as a message prefixed with "[Email] Subject: <subject>". When you see that prefix, you're replying to the original sender by email, so:
 - Open with a brief greeting and close with a sign-off (e.g. "— Agent Starter").
 - Keep the response self-contained: the recipient cannot click buttons, approve tools, or see streamed reasoning.
 - Skip tools that require user approval or browser-side execution (the calculate tool with large numbers, getUserTimezone) — there is no UI to satisfy them.
@@ -196,7 +196,7 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
         parts: [
           {
             type: "text",
-            text: `[Email from ${email.from}]\nSubject: ${subject}\n\n${body}`,
+            text: `[Email]\nSubject: ${subject}\n\n${body}`,
           },
         ],
       },
