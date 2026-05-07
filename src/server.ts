@@ -3,12 +3,12 @@ import {
   callable,
   routeAgentEmail,
   routeAgentRequest,
-  type Schedule,
+  type Schedule
 } from "agents";
 import {
   createCatchAllEmailResolver,
   isAutoReplyEmail,
-  type AgentEmail,
+  type AgentEmail
 } from "agents/email";
 import { getSchedulePrompt } from "agents/schedule";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
@@ -18,16 +18,104 @@ import {
   stepCountIs,
   streamText,
   type ModelMessage,
-  type UIMessage,
+  type UIMessage
 } from "ai";
 import PostalMime from "postal-mime";
 import { marked } from "marked";
 import EmailReplyParser from "email-reply-parser";
-import { tools } from "./tools";
+import { createTools } from "./tools";
 
 // Multilingual reply parser (port of GitHub's email_reply_parser).
 // Stateless — instantiated once and reused across email turns.
 const emailReplyParser = new EmailReplyParser();
+const MAX_REMINDER_SUBJECT_DESCRIPTION_LENGTH = 120;
+
+export type ScheduledEmailReply = {
+  to: string;
+  from: string;
+  subject?: string;
+  inReplyTo?: string;
+  references?: string;
+};
+
+export type ScheduledTaskPayload =
+  | string
+  | {
+      description: string;
+      emailReply?: ScheduledEmailReply;
+    };
+
+function getTaskDescription(payload: ScheduledTaskPayload) {
+  return typeof payload === "string" ? payload : payload.description;
+}
+
+function getReplySubject(subject: string | undefined, description: string) {
+  const trimmed = normalizeSubject(subject);
+  const safeDescription = normalizeSubject(description).slice(
+    0,
+    MAX_REMINDER_SUBJECT_DESCRIPTION_LENGTH
+  );
+  if (!trimmed)
+    return safeDescription ? `Reminder: ${safeDescription}` : "Reminder";
+  return /^re:/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
+}
+
+function normalizeSubject(value: string | undefined) {
+  return (
+    value
+      ?.replace(/[\r\n]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || ""
+  );
+}
+
+function normalizeEmailHeader(value: string | undefined) {
+  return value
+    ?.replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getReferencesHeader(
+  references: string | undefined,
+  inReplyTo: string | undefined
+) {
+  const normalizedReferences = normalizeEmailHeader(references);
+  const normalizedInReplyTo = normalizeEmailHeader(inReplyTo);
+  if (!normalizedReferences) return normalizedInReplyTo;
+  if (
+    !normalizedInReplyTo ||
+    normalizedReferences.includes(normalizedInReplyTo)
+  ) {
+    return normalizedReferences;
+  }
+  return `${normalizedReferences} ${normalizedInReplyTo}`;
+}
+
+function renderReminderHtml(description: string) {
+  return `<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#1f2937;"><p><strong>Reminder:</strong> ${escapeHtml(description)}</p></body></html>`;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function findEmailReplyContextMessageId(
+  messages: UIMessage[],
+  contexts: Map<string, ScheduledEmailReply>
+) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "user" && contexts.has(message.id)) {
+      return message.id;
+    }
+  }
+}
 
 /**
  * The AI SDK's downloadAssets step runs `new URL(data)` on every file
@@ -46,13 +134,14 @@ function inlineDataUrls(messages: ModelMessage[]): ModelMessage[] {
         if (!match) return part;
         const bytes = Uint8Array.from(atob(match[2]), (c) => c.charCodeAt(0));
         return { ...part, data: bytes, mediaType: match[1] };
-      }),
+      })
     };
   });
 }
 
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 100;
+  private emailReplyContexts = new Map<string, ScheduledEmailReply>();
 
   onStart() {
     // Configure OAuth popup behavior for MCP servers that require authentication
@@ -61,14 +150,14 @@ export class ChatAgent extends AIChatAgent<Env> {
         if (result.authSuccess) {
           return new Response("<script>window.close();</script>", {
             headers: { "content-type": "text/html" },
-            status: 200,
+            status: 200
           });
         }
         return new Response(
           `Authentication Failed: ${result.authError || "Unknown error"}`,
-          { headers: { "content-type": "text/plain" }, status: 400 },
+          { headers: { "content-type": "text/plain" }, status: 400 }
         );
-      },
+      }
     });
   }
 
@@ -85,10 +174,21 @@ export class ChatAgent extends AIChatAgent<Env> {
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const mcpTools = this.mcp.getAITools();
     const workersai = createWorkersAI({ binding: this.env.AI });
+    const emailReplyContextMessageId = findEmailReplyContextMessageId(
+      this.messages,
+      this.emailReplyContexts
+    );
+    const emailReplyContext = emailReplyContextMessageId
+      ? this.emailReplyContexts.get(emailReplyContextMessageId)
+      : undefined;
+
+    if (emailReplyContextMessageId) {
+      this.emailReplyContexts.delete(emailReplyContextMessageId);
+    }
 
     const result = streamText({
       model: workersai("@cf/moonshotai/kimi-k2.6", {
-        sessionAffinity: this.sessionAffinity,
+        sessionAffinity: this.sessionAffinity
       }),
       system: `You are a helpful assistant that can understand images. You can check the weather, get the user's timezone, run calculations, and schedule tasks. When users share images, describe what you see and answer questions about them.
 
@@ -96,6 +196,7 @@ You can be reached two ways: through this real-time chat UI, or by email — any
 - Open with a brief greeting and close with a sign-off (e.g. "— Agent Starter").
 - Keep the response self-contained: the recipient cannot click buttons, approve tools, or see streamed reasoning.
 - Skip tools that require user approval or browser-side execution (the calculate tool with large numbers, getUserTimezone) — there is no UI to satisfy them.
+- Scheduling is supported over email. If you schedule a task from an email request, the scheduled notification will be sent later as an email reply to the original sender.
 - Format with standard markdown (headings, lists, links, fenced code blocks, **bold**, *italic*). It's rendered to HTML before sending, so use it normally — but don't embed raw HTML tags or images, and avoid wide tables that won't render well in email clients.
 
 For regular chat messages without that prefix, behave normally and use any tool you need.
@@ -106,25 +207,49 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
       // Prune old tool calls to save tokens on long conversations
       messages: pruneMessages({
         messages: inlineDataUrls(await convertToModelMessages(this.messages)),
-        toolCalls: "before-last-2-messages",
+        toolCalls: "before-last-2-messages"
       }),
       tools: {
         // MCP tools from connected servers
         ...mcpTools,
         // Built-in tools (weather, timezone, calculate, scheduling).
-        // Each tool resolves the current agent via getCurrentAgent().
-        ...tools,
+        // Email reply metadata is captured per turn because saveMessages()
+        // intentionally runs without getCurrentAgent().email.
+        ...createTools(emailReplyContext)
       },
       stopWhen: stepCountIs(5),
-      abortSignal: options?.abortSignal,
+      abortSignal: options?.abortSignal
     });
 
     return result.toUIMessageStreamResponse();
   }
 
-  async executeTask(description: string, _task: Schedule<string>) {
+  async executeTask(
+    payload: ScheduledTaskPayload,
+    _task: Schedule<ScheduledTaskPayload>
+  ) {
+    const description = getTaskDescription(payload);
+
     // Do the actual work here (send email, call API, etc.)
     console.log(`Executing scheduled task: ${description}`);
+
+    if (typeof payload !== "string" && payload.emailReply) {
+      const { emailReply } = payload;
+      const references = getReferencesHeader(
+        emailReply.references,
+        emailReply.inReplyTo
+      );
+      await this.sendEmail({
+        binding: this.env.EMAIL,
+        to: emailReply.to,
+        from: { email: emailReply.from, name: "Agent Starter" },
+        subject: getReplySubject(emailReply.subject, description),
+        text: `Reminder: ${description}`,
+        html: renderReminderHtml(description),
+        ...(emailReply.inReplyTo ? { inReplyTo: emailReply.inReplyTo } : {}),
+        ...(references ? { headers: { References: references } } : {})
+      });
+    }
 
     // Notify connected clients via a broadcast event.
     // We use broadcast() instead of saveMessages() to avoid injecting
@@ -134,8 +259,8 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
       JSON.stringify({
         type: "scheduled-task",
         description,
-        timestamp: new Date().toISOString(),
-      }),
+        timestamp: new Date().toISOString()
+      })
     );
   }
 
@@ -184,27 +309,50 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
     const body = emailReplyParser.parseReply(rawBody).trim() || rawBody;
 
     const beforeCount = this.messages.length;
+    const emailMessageId = crypto.randomUUID();
+    const inReplyTo =
+      parsed.messageId || email.headers.get("Message-ID")?.trim();
+    const references =
+      parsed.references || email.headers.get("References")?.trim();
+    const emailReplyContext: ScheduledEmailReply = {
+      // Match replyToEmail's deferred-reply docs and live reply behavior.
+      to: email.from,
+      from: email.to,
+      ...(subject ? { subject } : {}),
+      ...(inReplyTo ? { inReplyTo } : {}),
+      ...(references ? { references } : {})
+    };
 
     // Inject the email content as a user turn. saveMessages waits for
     // the resulting assistant turn to finish before resolving, so by
     // the time it returns the reply is already in `this.messages`.
-    const result = await this.saveMessages((messages: UIMessage[]) => [
-      ...messages,
-      {
-        id: crypto.randomUUID(),
-        role: "user",
-        parts: [
-          {
-            type: "text",
-            text: `[Email]\nSubject: ${subject}\n\n${body}`,
-          },
-        ],
-      },
-    ]);
+    const result = await (async () => {
+      try {
+        return await this.saveMessages((messages: UIMessage[]) => {
+          this.emailReplyContexts.set(emailMessageId, emailReplyContext);
+
+          return [
+            ...messages,
+            {
+              id: emailMessageId,
+              role: "user",
+              parts: [
+                {
+                  type: "text",
+                  text: `[Email]\nSubject: ${subject}\n\n${body}`
+                }
+              ]
+            }
+          ];
+        });
+      } finally {
+        this.emailReplyContexts.delete(emailMessageId);
+      }
+    })();
 
     if (result.status !== "completed") {
       console.warn(
-        `Skipping email reply: chat turn status was ${result.status}`,
+        `Skipping email reply: chat turn status was ${result.status}`
       );
       return;
     }
@@ -219,7 +367,7 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
         (p): p is { type: "text"; text: string } =>
           p.type === "text" &&
           typeof (p as { text?: unknown }).text === "string" &&
-          (p as { text: string }).text.trim().length > 0,
+          (p as { text: string }).text.trim().length > 0
       )
       .map((p) => p.text)
       .join("\n\n");
@@ -237,7 +385,7 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
         await this.replyToEmail(email, {
           fromName: "Agent Starter",
           body: htmlBody,
-          contentType: "text/html",
+          contentType: "text/html"
         });
       } catch (error) {
         console.error("Failed to send email reply:", error);
@@ -269,7 +417,7 @@ export default {
    */
   async email(message, env) {
     await routeAgentEmail(message, env, {
-      resolver: createCatchAllEmailResolver("ChatAgent", "default"),
+      resolver: createCatchAllEmailResolver("ChatAgent", "default")
     });
-  },
+  }
 } satisfies ExportedHandler<Env>;
