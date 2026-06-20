@@ -6,6 +6,11 @@ import { scheduleSchema } from "agents/schedule";
 import type { MyAgent } from "./server";
 import type { ScheduledEmailReply, ScheduledTaskPayload } from "./utils";
 
+function requireAgent(): MyAgent | string {
+  const { agent } = getCurrentAgent<MyAgent>();
+  return agent ?? "Agent context unavailable";
+}
+
 /**
  * Tools resolve the running agent via `getCurrentAgent()` for state and
  * scheduling. https://developers.cloudflare.com/agents/api-reference/get-current-agent/
@@ -71,8 +76,8 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
         "Schedule a task to be executed at a later time. Use this when the user asks to be reminded or wants something done later.",
       inputSchema: scheduleSchema,
       execute: async ({ when, description }) => {
-        const { agent } = getCurrentAgent<MyAgent>();
-        if (!agent) return "Agent context unavailable";
+        const agent = requireAgent();
+        if (typeof agent === "string") return agent;
 
         if (when.type === "no-schedule") {
           return "Not a valid schedule input";
@@ -104,8 +109,8 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
       description: "List all tasks that have been scheduled",
       inputSchema: z.object({}),
       execute: async () => {
-        const { agent } = getCurrentAgent<MyAgent>();
-        if (!agent) return "Agent context unavailable";
+        const agent = requireAgent();
+        if (typeof agent === "string") return agent;
 
         const tasks = agent.getSchedules();
         return tasks.length > 0 ? tasks : "No scheduled tasks found.";
@@ -118,8 +123,8 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
         taskId: z.string().describe("The ID of the task to cancel")
       }),
       execute: async ({ taskId }) => {
-        const { agent } = getCurrentAgent<MyAgent>();
-        if (!agent) return "Agent context unavailable";
+        const agent = requireAgent();
+        if (typeof agent === "string") return agent;
 
         try {
           await agent.cancelSchedule(taskId);

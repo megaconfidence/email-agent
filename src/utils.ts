@@ -2,12 +2,10 @@ import { getSchedulePrompt } from "agents/schedule";
 import { isAutoReplyEmail, type AgentEmail } from "agents/email";
 import PostalMime, { type Email } from "postal-mime";
 import { marked } from "marked";
-import EmailReplyParser from "email-reply-parser";
 import type { ModelMessage, UIMessage } from "ai";
 // Type-only import avoids a runtime cycle with server.ts.
 import type { MyAgent } from "./server";
 
-const emailReplyParser = new EmailReplyParser();
 const MAX_REMINDER_SUBJECT_DESCRIPTION_LENGTH = 120;
 
 export type ScheduledEmailReply = {
@@ -48,11 +46,11 @@ export async function sendReminderEmail(
   agent: MyAgent,
   binding: SendEmail,
   emailReply: ScheduledEmailReply,
-  description: string,
+  description: string
 ) {
   const references = getReferencesHeader(
     emailReply.references,
-    emailReply.inReplyTo,
+    emailReply.inReplyTo
   );
   await agent.sendEmail({
     binding,
@@ -62,7 +60,7 @@ export async function sendReminderEmail(
     text: `Reminder: ${description}`,
     html: renderReminderHtml(description),
     ...(emailReply.inReplyTo ? { inReplyTo: emailReply.inReplyTo } : {}),
-    ...(references ? { headers: { References: references } } : {}),
+    ...(references ? { headers: { References: references } } : {})
   });
 }
 
@@ -78,7 +76,7 @@ export type InboundEmail = {
  * https://developers.cloudflare.com/agents/api-reference/email/
  */
 export async function parseInboundEmail(
-  email: AgentEmail,
+  email: AgentEmail
 ): Promise<InboundEmail | null> {
   const parsed = await PostalMime.parse(await email.getRaw());
   if (isAutoReplyEmail(parsed.headers)) return null;
@@ -86,8 +84,8 @@ export async function parseInboundEmail(
   const subject = parsed.subject?.trim() || "(no subject)";
   return {
     subject,
-    body: extractEmailBody(parsed),
-    replyContext: buildEmailReplyContext(email, parsed, subject),
+    body: await extractEmailBody(parsed),
+    replyContext: buildEmailReplyContext(email, parsed, subject)
   };
 }
 
@@ -98,7 +96,7 @@ export async function parseInboundEmail(
 export async function runInboundEmailTurn(
   agent: MyAgent,
   contexts: Map<string, ScheduledEmailReply>,
-  inbound: InboundEmail,
+  inbound: InboundEmail
 ) {
   const messageId = crypto.randomUUID();
   try {
@@ -112,10 +110,10 @@ export async function runInboundEmailTurn(
           parts: [
             {
               type: "text",
-              text: `[Email]\nSubject: ${inbound.subject}\n\n${inbound.body}`,
-            },
-          ],
-        },
+              text: `[Email]\nSubject: ${inbound.subject}\n\n${inbound.body}`
+            }
+          ]
+        }
       ];
     });
   } finally {
@@ -123,23 +121,87 @@ export async function runInboundEmailTurn(
   }
 }
 
-function extractEmailBody(parsed: Email) {
+async function extractEmailBody(parsed: Email) {
   const rawBody =
     parsed.text?.trim() ||
-    // postal-mime renders HTML when there is no text part; strip tags.
-    parsed.html
-      ?.replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim() ||
+    // postal-mime only fills `text` for multipart mail; otherwise convert the
+    // HTML part to plain text with the Workers-native HTMLRewriter.
+    (parsed.html ? await htmlToText(parsed.html) : "") ||
     "(empty body)";
   // Drop quoted history and signatures so the model only sees fresh content.
-  return emailReplyParser.parseReply(rawBody).trim() || rawBody;
+  return stripQuotedReply(rawBody) || rawBody;
+}
+
+/**
+ * Convert an HTML email part to readable plain text using HTMLRewriter, the
+ * runtime's streaming HTML parser. Unlike a tag-stripping regex it discards
+ * <script>/<style> contents and breaks lines on block elements.
+ * https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/
+ */
+async function htmlToText(html: string): Promise<string> {
+  const chunks: string[] = [];
+  let skipDepth = 0;
+  const rewriter = new HTMLRewriter()
+    .on("script, style", {
+      element(el) {
+        skipDepth++;
+        el.onEndTag(() => {
+          skipDepth--;
+        });
+      }
+    })
+    .on("br", {
+      element() {
+        chunks.push("\n");
+      }
+    })
+    .on("p, div, li, tr, h1, h2, h3, h4, h5, h6, blockquote", {
+      element(el) {
+        chunks.push("\n");
+        el.onEndTag(() => {
+          chunks.push("\n");
+        });
+      }
+    })
+    .on("*", {
+      text(t) {
+        if (skipDepth === 0) chunks.push(t.text);
+      }
+    });
+  await rewriter.transform(new Response(html)).text();
+  return chunks
+    .join("")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Heuristic quote/signature stripper (Gmail/Apple/Outlook) for inbound replies. */
+function stripQuotedReply(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+    const next = (lines[i + 1] ?? "").trimEnd();
+    const isQuoteHeader =
+      line.startsWith(">") ||
+      /^-{2,}\s*original message\s*-{2,}/i.test(line) ||
+      /^_{5,}$/.test(line) ||
+      /^from:\s/i.test(line) ||
+      /^on\b.*\bwrote:$/i.test(line) ||
+      (/^on\b/i.test(line) && /\bwrote:$/i.test(`${line} ${next}`));
+    const isSignature = line === "--" || /^sent from my /i.test(line);
+    if (isQuoteHeader || isSignature) break;
+    kept.push(lines[i]);
+  }
+  return kept.join("\n").trim();
 }
 
 function buildEmailReplyContext(
   email: AgentEmail,
   parsed: Email,
-  subject: string,
+  subject: string
 ): ScheduledEmailReply {
   const inReplyTo = parsed.messageId || email.headers.get("Message-ID")?.trim();
   const references =
@@ -149,7 +211,7 @@ function buildEmailReplyContext(
     from: email.to,
     ...(subject ? { subject } : {}),
     ...(inReplyTo ? { inReplyTo } : {}),
-    ...(references ? { references } : {}),
+    ...(references ? { references } : {})
   };
 }
 
@@ -162,7 +224,7 @@ export function extractAssistantText(messages: UIMessage[]) {
       (p): p is { type: "text"; text: string } =>
         p.type === "text" &&
         typeof (p as { text?: unknown }).text === "string" &&
-        (p as { text: string }).text.trim().length > 0,
+        (p as { text: string }).text.trim().length > 0
     )
     .map((p) => p.text)
     .join("\n\n");
@@ -170,12 +232,12 @@ export function extractAssistantText(messages: UIMessage[]) {
 
 export function getReplySubject(
   subject: string | undefined,
-  description: string,
+  description: string
 ) {
-  const trimmed = normalizeSubject(subject);
-  const safeDescription = normalizeSubject(description).slice(
+  const trimmed = normalizeWhitespace(subject);
+  const safeDescription = normalizeWhitespace(description).slice(
     0,
-    MAX_REMINDER_SUBJECT_DESCRIPTION_LENGTH,
+    MAX_REMINDER_SUBJECT_DESCRIPTION_LENGTH
   );
   if (!trimmed)
     return safeDescription ? `Reminder: ${safeDescription}` : "Reminder";
@@ -184,10 +246,10 @@ export function getReplySubject(
 
 export function getReferencesHeader(
   references: string | undefined,
-  inReplyTo: string | undefined,
+  inReplyTo: string | undefined
 ) {
-  const normalizedReferences = normalizeEmailHeader(references);
-  const normalizedInReplyTo = normalizeEmailHeader(inReplyTo);
+  const normalizedReferences = normalizeWhitespace(references);
+  const normalizedInReplyTo = normalizeWhitespace(inReplyTo);
   if (!normalizedReferences) return normalizedInReplyTo;
   if (
     !normalizedInReplyTo ||
@@ -198,7 +260,7 @@ export function getReferencesHeader(
   return `${normalizedReferences} ${normalizedInReplyTo}`;
 }
 
-function normalizeSubject(value: string | undefined) {
+function normalizeWhitespace(value: string | undefined) {
   return (
     value
       ?.replace(/[\r\n]+/g, " ")
@@ -207,20 +269,13 @@ function normalizeSubject(value: string | undefined) {
   );
 }
 
-function normalizeEmailHeader(value: string | undefined) {
-  return value
-    ?.replace(/[\r\n]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export async function renderEmailHtml(markdown: string) {
   return wrapEmailHtml(await marked.parse(markdown, { gfm: true }));
 }
 
 export function renderReminderHtml(description: string) {
   return wrapEmailHtml(
-    `<p><strong>Reminder:</strong> ${escapeHtml(description)}</p>`,
+    `<p><strong>Reminder:</strong> ${escapeHtml(description)}</p>`
   );
 }
 
@@ -239,7 +294,7 @@ function escapeHtml(value: string) {
 
 export function findEmailReplyContextMessageId(
   messages: UIMessage[],
-  contexts: Map<string, ScheduledEmailReply>,
+  contexts: Map<string, ScheduledEmailReply>
 ) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -265,7 +320,7 @@ export function inlineDataUrls(messages: ModelMessage[]): ModelMessage[] {
         if (!match) return part;
         const bytes = Uint8Array.from(atob(match[2]), (c) => c.charCodeAt(0));
         return { ...part, data: bytes, mediaType: match[1] };
-      }),
+      })
     };
   });
 }
