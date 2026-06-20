@@ -2,39 +2,22 @@ import { tool } from "ai";
 import { z } from "zod";
 import { getCurrentAgent } from "agents";
 import { scheduleSchema } from "agents/schedule";
-// Type-only import — avoids a runtime cycle with server.ts. Used so
-// `agent.schedule("executeTask", ...)` is accepted (the callback name
-// is checked against the agent's own keys).
-import type {
-  ChatAgent,
-  ScheduledEmailReply,
-  ScheduledTaskPayload
-} from "./server";
+// Type-only import avoids a runtime cycle with server.ts.
+import type { MyAgent } from "./server";
+import type { ScheduledEmailReply, ScheduledTaskPayload } from "./utils";
 
 /**
- * Tool definitions for the chat agent.
- *
- * Tools that need agent state or scheduling capabilities resolve the
- * current agent via `getCurrentAgent()` — the framework wraps every
- * agent method (and any function it calls) in an async context so this
- * works without explicit plumbing.
- * https://developers.cloudflare.com/agents/api-reference/get-current-agent/
- *
- * Three patterns are demonstrated:
- *   - server-side auto-execute (`getWeather`, `scheduleTask`, ...)
- *   - client-side / browser (`getUserTimezone` — no `execute`)
- *   - human-in-the-loop approval (`calculate` via `needsApproval`)
+ * Tools resolve the running agent via `getCurrentAgent()` for state and
+ * scheduling. https://developers.cloudflare.com/agents/api-reference/get-current-agent/
  */
 export function createTools(emailReplyContext?: ScheduledEmailReply) {
   return {
-    // Server-side tool: runs automatically on the server
     getWeather: tool({
       description: "Get the current weather for a city",
       inputSchema: z.object({
         city: z.string().describe("City name")
       }),
       execute: async ({ city }) => {
-        // Replace with a real weather API in production
         const conditions = ["sunny", "cloudy", "rainy", "snowy"];
         const temp = Math.floor(Math.random() * 30) + 5;
         return {
@@ -46,14 +29,13 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
       }
     }),
 
-    // Client-side tool: no execute function — the browser handles it
+    // No execute — resolved client-side in the browser.
     getUserTimezone: tool({
       description:
         "Get the user's timezone from their browser. Use this when you need to know the user's local time.",
       inputSchema: z.object({})
     }),
 
-    // Approval tool: requires user confirmation before executing
     calculate: tool({
       description:
         "Perform a math calculation with two numbers. Requires user approval for large numbers.",
@@ -89,7 +71,7 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
         "Schedule a task to be executed at a later time. Use this when the user asks to be reminded or wants something done later.",
       inputSchema: scheduleSchema,
       execute: async ({ when, description }) => {
-        const { agent } = getCurrentAgent<ChatAgent>();
+        const { agent } = getCurrentAgent<MyAgent>();
         if (!agent) return "Agent context unavailable";
 
         if (when.type === "no-schedule") {
@@ -122,7 +104,7 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
       description: "List all tasks that have been scheduled",
       inputSchema: z.object({}),
       execute: async () => {
-        const { agent } = getCurrentAgent<ChatAgent>();
+        const { agent } = getCurrentAgent<MyAgent>();
         if (!agent) return "Agent context unavailable";
 
         const tasks = agent.getSchedules();
@@ -136,7 +118,7 @@ export function createTools(emailReplyContext?: ScheduledEmailReply) {
         taskId: z.string().describe("The ID of the task to cancel")
       }),
       execute: async ({ taskId }) => {
-        const { agent } = getCurrentAgent<ChatAgent>();
+        const { agent } = getCurrentAgent<MyAgent>();
         if (!agent) return "Agent context unavailable";
 
         try {
