@@ -39,7 +39,7 @@ src/
 
 ## What's included
 
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
+- **AI Chat** — Streaming responses powered by Workers AI via `Think`
 - **Email** — `onEmail` handler parses inbound mail, routes it through the AI, and replies via the Email Service binding
 - **Image input** — Drag-and-drop, paste, or click to attach images for vision-capable models
 - **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
@@ -57,7 +57,7 @@ Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangl
 
 ### Change the system prompt
 
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
+Edit the string returned by `getSystemPrompt()` in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
 
 ### Replace the demo tools with real ones
 
@@ -77,7 +77,7 @@ getWeather: tool({
 
 ### Add your own tools
 
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
+Add new tools to `createTools()` in `src/tools.ts` (returned from the agent's `getTools()`). There are three patterns:
 
 ```ts
 // Auto-execute: runs on the server, no user interaction
@@ -135,8 +135,9 @@ Expose agent methods as typed RPC that your client can call directly:
 
 ```ts
 import { callable } from "agents";
+import { Think } from "@cloudflare/think";
 
-export class ChatAgent extends AIChatAgent<Env> {
+export class MyAgent extends Think<Env> {
   @callable()
   async getStats() {
     return { messageCount: this.messages.length };
@@ -151,20 +152,16 @@ See [Callable methods](https://developers.cloudflare.com/agents/api-reference/ca
 
 ### Connect to MCP servers
 
-Add external tools from MCP servers:
+Think automatically merges tools from connected MCP servers into every turn —
+just connect a server and its tools become available to the model with no extra
+wiring. This template exposes `addServer`/`removeServer` as callable methods:
 
 ```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
+import { callable } from "agents";
 
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
+@callable()
+async addServer(name: string, url: string) {
+  return await this.addMcpServer(name, url);
 }
 ```
 
@@ -181,14 +178,12 @@ npm install @ai-sdk/openai
 ```
 
 ```ts
-// In server.ts, replace the model:
+// In server.ts, replace the model returned by getModel():
 import { openai } from "@ai-sdk/openai";
 
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
+getModel() {
+  return openai("gpt-5.2");
+}
 ```
 
 Create a `.env` file with your API key:
@@ -206,10 +201,9 @@ npm install @ai-sdk/anthropic
 ```ts
 import { anthropic } from "@ai-sdk/anthropic";
 
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
+getModel() {
+  return anthropic("claude-sonnet-4-20250514");
+}
 ```
 
 Create a `.env` file with your API key:
@@ -229,8 +223,8 @@ The agent can send and receive email through [Cloudflare Email Service](https://
 
 ### How it works
 
-- `src/server.ts` adds an `email()` handler to the default export that calls `routeAgentEmail` with `createCatchAllEmailResolver("ChatAgent", "default")` — every inbound message is routed to a single `ChatAgent` instance (a "shared inbox" pattern).
-- `ChatAgent.onEmail` parses the message with `postal-mime`, skips RFC 3834 auto-replies via `isAutoReplyEmail`, and calls `this.saveMessages(...)` so the email appears as a user turn. `saveMessages` triggers the existing `onChatMessage` flow, then we reply to the original sender via `this.replyToEmail` with the assistant's text.
+- `src/server.ts` adds an `email()` handler to the default export that calls `routeAgentEmail` with `createCatchAllEmailResolver("MyAgent", "default")` — every inbound message is routed to a single `MyAgent` instance (a "shared inbox" pattern).
+- `MyAgent.onEmail` parses the message with `postal-mime`, skips RFC 3834 auto-replies via `isAutoReplyEmail`, and calls `this.saveMessages(...)` so the email appears as a user turn. `saveMessages` runs a Think chat turn and waits for it to finish, then we reply to the original sender via `this.replyToEmail` with the assistant's text.
 
 ### Try it
 
@@ -238,7 +232,7 @@ After deploying and pointing your Routing rule at the Worker, send mail to any a
 
 ### Switch routing strategies
 
-- **Address-based** — replace the resolver with `createAddressBasedEmailResolver("ChatAgent")` to route `ChatAgent+user123@yourdomain.com` to per-user agent instances.
+- **Address-based** — replace the resolver with `createAddressBasedEmailResolver("MyAgent")` to route `MyAgent+user123@yourdomain.com` to per-user agent instances.
 - **Secure replies** — pass a `secret` to `replyToEmail` and combine with `createSecureReplyEmailResolver(secret)` to verify HMAC-signed reply headers. Store the secret as a Worker [secret](https://developers.cloudflare.com/workers/configuration/secrets/) and read it from `this.env`.
 
 See the [Agents email docs](https://developers.cloudflare.com/agents/api-reference/email/) for the full resolver matrix.

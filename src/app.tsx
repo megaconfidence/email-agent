@@ -3,7 +3,7 @@ import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { MCPServersState } from "agents";
-import type { ChatAgent } from "./server";
+import type { MyAgent } from "./server";
 import {
   Badge,
   Button,
@@ -39,8 +39,6 @@ import {
   ImageIcon
 } from "@phosphor-icons/react";
 
-// ── Attachment helpers ────────────────────────────────────────────────
-
 interface Attachment {
   id: string;
   file: File;
@@ -65,8 +63,6 @@ function fileToDataUri(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
-
-// ── Small components ──────────────────────────────────────────────────
 
 function ThemeToggle() {
   const [dark, setDark] = useState(
@@ -93,8 +89,6 @@ function ThemeToggle() {
   );
 }
 
-// ── Tool rendering ────────────────────────────────────────────────────
-
 function ToolPartView({
   part,
   addToolApprovalResponse
@@ -108,7 +102,6 @@ function ToolPartView({
   if (!isToolUIPart(part)) return null;
   const toolName = getToolName(part);
 
-  // Completed
   if (part.state === "output-available") {
     return (
       <div className="flex justify-start">
@@ -130,7 +123,6 @@ function ToolPartView({
     );
   }
 
-  // Needs approval
   if ("approval" in part && part.state === "approval-requested") {
     const approvalId = (part.approval as { id?: string })?.id;
     return (
@@ -178,7 +170,6 @@ function ToolPartView({
     );
   }
 
-  // Rejected / denied
   if (
     part.state === "output-denied" ||
     ("approval" in part &&
@@ -199,7 +190,6 @@ function ToolPartView({
     );
   }
 
-  // Executing
   if (part.state === "input-available" || part.state === "input-streaming") {
     return (
       <div className="flex justify-start">
@@ -217,8 +207,6 @@ function ToolPartView({
 
   return null;
 }
-
-// ── Main chat ─────────────────────────────────────────────────────────
 
 function Chat() {
   const [connected, setConnected] = useState(false);
@@ -242,8 +230,8 @@ function Chat() {
   const [isAddingServer, setIsAddingServer] = useState(false);
   const mcpPanelRef = useRef<HTMLDivElement>(null);
 
-  const agent = useAgent<ChatAgent>({
-    agent: "ChatAgent",
+  const agent = useAgent<MyAgent>({
+    agent: "MyAgent",
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
     onError: useCallback(
@@ -444,7 +432,6 @@ function Chat() {
         </div>
       )}
 
-      {/* Header */}
       <header className="px-5 py-4 bg-kumo-base border-b border-kumo-line">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -492,11 +479,9 @@ function Chat() {
                 )}
               </Button>
 
-              {/* MCP Dropdown Panel */}
               {showMcpPanel && (
                 <div className="absolute right-0 top-full mt-2 w-96 z-50">
                   <Surface className="rounded-xl ring ring-kumo-line shadow-lg p-4 space-y-4">
-                    {/* Panel Header */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <PlugsConnectedIcon
@@ -522,7 +507,6 @@ function Chat() {
                       />
                     </div>
 
-                    {/* Add Server Form */}
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -559,7 +543,6 @@ function Chat() {
                       </div>
                     </form>
 
-                    {/* Server List */}
                     {serverEntries.length > 0 && (
                       <div className="space-y-2 max-h-60 overflow-y-auto">
                         {serverEntries.map(([id, server]) => (
@@ -625,7 +608,6 @@ function Chat() {
                       </div>
                     )}
 
-                    {/* Tool Summary */}
                     {mcpToolCount > 0 && (
                       <div className="pt-2 border-t border-kumo-line">
                         <div className="flex items-center gap-2">
@@ -653,7 +635,6 @@ function Chat() {
         </div>
       </header>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
           {messages.length === 0 && (
@@ -701,7 +682,6 @@ function Chat() {
                   </pre>
                 )}
 
-                {/* Tool parts */}
                 {message.parts.filter(isToolUIPart).map((part) => (
                   <ToolPartView
                     key={part.toolCallId}
@@ -710,7 +690,6 @@ function Chat() {
                   />
                 ))}
 
-                {/* Reasoning parts */}
                 {message.parts
                   .filter(
                     (part) =>
@@ -754,7 +733,6 @@ function Chat() {
                     );
                   })}
 
-                {/* Image parts */}
                 {message.parts
                   .filter(
                     (part): part is Extract<typeof part, { type: "file" }> =>
@@ -776,7 +754,6 @@ function Chat() {
                     </div>
                   ))}
 
-                {/* Text parts */}
                 {message.parts
                   .filter((part) => part.type === "text")
                   .map((part, i) => {
@@ -816,7 +793,6 @@ function Chat() {
         </div>
       </div>
 
-      {/* Input */}
       <div className="border-t border-kumo-line bg-kumo-base">
         <form
           onSubmit={(e) => {
