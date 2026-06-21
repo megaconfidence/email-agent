@@ -1,255 +1,80 @@
-# Agent Starter
+# Email Agent
 
-![npm i agents command](./npm-agents-banner.svg)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/megaconfidence/email-agent)
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
+An AI agent you reach by **email**. Send a message to an address on your domain and the agent reads it, does the work — answering questions, running tools, scheduling reminders — and emails you back. The same agent is also available through a real-time web chat UI.
 
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
+Built entirely on Cloudflare with the [Agents SDK](https://developers.cloudflare.com/agents/) (via `@cloudflare/think`) on [Workers AI](https://developers.cloudflare.com/workers-ai/) — no API keys.
 
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, task scheduling, and vision (image input).
+## Why
 
-## Quick start
+- **Email is the interface.** Nothing to install and no account to create — anyone with the address can delegate a task. The agent behaves the same way through the web chat UI.
+- **All on Cloudflare.** Workers AI runs inference (no third-party keys or bills), Durable Objects hold per-agent state and run the scheduler, and Email Service sends and receives real mail. It scales to zero and hibernates when idle.
+- **Durable and stateful.** Each agent remembers its conversation in SQLite, can schedule future work (including reminders that email you back), and can connect to MCP servers to gain new tools at runtime.
+
+## How it works
+
+Inbound mail is routed to a single shared `MyAgent` instance (a "shared inbox"):
+
+1. Cloudflare Email Routing delivers the message to the Worker's `email()` handler, which calls `routeAgentEmail` with a catch-all resolver.
+2. `MyAgent.onEmail` parses the message (`postal-mime`), ignores auto-replies, and runs one AI turn over the conversation.
+3. The reply is rendered to HTML and sent back to the original sender via the Email Service binding.
+
+Every email turn is saved to the agent's history, so it also appears live in the web chat UI — and vice versa.
+
+## Features
+
+- **Email in and out** — inbound parsing, auto-reply detection, and threaded HTML replies.
+- **Web chat UI** — Kumo design system, streaming responses, image/vision input, reasoning display, and a debug view.
+- **Tools** — three patterns: server-side (`getWeather`), client-side answered by the browser (`getUserTimezone`), and human-in-the-loop approval (`calculate`).
+- **Scheduling** — one-time, delayed, and recurring (cron) tasks; reminders can be emailed to you when they fire.
+- **MCP client** — connect external tool servers at runtime (with OAuth); their tools are merged into every turn automatically.
+
+## Run it
+
+### Deploy
+
+Click **Deploy to Cloudflare** above, or from a clone:
 
 ```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
-cd agents-starter
+npm install
+npm run deploy
+```
+
+### Local development
+
+```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
+Open [http://localhost:5173](http://localhost:5173) for the chat UI.
 
-Try these prompts to see the different features:
+### Enable email
 
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
-- **Drop an image and ask "What's in this image?"** — vision (image understanding)
+Sending and receiving mail needs a one-time setup in the Cloudflare dashboard:
+
+1. **Onboard a domain** under **Compute & AI → Email Service** and add the SPF/DKIM DNS records.
+2. **Add an Email Routing rule** that sends inbound mail to this Worker (**Email → Email Routing → Routing rules → Send to a Worker**).
+
+Then email any address on your domain and watch the reply land in your inbox.
 
 ## Project structure
 
 ```
 src/
-  server.ts    # Chat agent with tools and scheduling
-  app.tsx      # Chat UI built with Kumo components
+  server.ts    # MyAgent: model, system prompt, email handler, scheduling, MCP
+  tools.ts     # Agent tools
+  utils.ts     # Email parsing/rendering and helpers
+  app.tsx      # Web chat UI
   client.tsx   # React entry point
   styles.css   # Tailwind + Kumo styles
+wrangler.jsonc # Worker config and bindings (AI, Email, Durable Object)
 ```
-
-## What's included
-
-- **AI Chat** — Streaming responses powered by Workers AI via `Think`
-- **Email** — `onEmail` handler parses inbound mail, routes it through the AI, and replies via the Email Service binding
-- **Image input** — Drag-and-drop, paste, or click to attach images for vision-capable models
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Kumo UI** — Cloudflare's design system with dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
-
-## Making it your own
-
-### Name your project
-
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
-
-### Change the system prompt
-
-Edit the string returned by `getSystemPrompt()` in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
-
-### Replace the demo tools with real ones
-
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
-
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
-
-### Add your own tools
-
-Add new tools to `createTools()` in `src/tools.ts` (returned from the agent's `getTools()`). There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`, `generateId`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-import { Think } from "@cloudflare/think";
-
-export class MyAgent extends Think<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Think automatically merges tools from connected MCP servers into every turn —
-just connect a server and its tools become available to the model with no extra
-wiring. This template exposes `addServer`/`removeServer` as callable methods:
-
-```ts
-import { callable } from "agents";
-
-@callable()
-async addServer(name: string, url: string) {
-  return await this.addMcpServer(name, url);
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
-
-```bash
-npm install @ai-sdk/openai
-```
-
-```ts
-// In server.ts, replace the model returned by getModel():
-import { openai } from "@ai-sdk/openai";
-
-getModel() {
-  return openai("gpt-5.2");
-}
-```
-
-Create a `.env` file with your API key:
-
-```
-OPENAI_API_KEY=your-key-here
-```
-
-### Anthropic
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-
-getModel() {
-  return anthropic("claude-sonnet-4-20250514");
-}
-```
-
-Create a `.env` file with your API key:
-
-```
-ANTHROPIC_API_KEY=your-key-here
-```
-
-## Email
-
-The agent can send and receive email through [Cloudflare Email Service](https://developers.cloudflare.com/email-service/). Inbound mail is parsed with `postal-mime`, fed into the chat history (so it appears in the UI), and the AI's reply is sent back to the original sender.
-
-### One-time setup
-
-1. **Onboard a domain** in the Cloudflare dashboard under **Compute & AI → Email Service** and add the SPF/DKIM DNS records.
-2. **Add an Email Routing rule** that delivers inbound mail to this Worker (`Email → Email Routing → Routing rules → Send to a Worker`).
-
-### How it works
-
-- `src/server.ts` adds an `email()` handler to the default export that calls `routeAgentEmail` with `createCatchAllEmailResolver("MyAgent", "default")` — every inbound message is routed to a single `MyAgent` instance (a "shared inbox" pattern).
-- `MyAgent.onEmail` parses the message with `postal-mime`, skips RFC 3834 auto-replies via `isAutoReplyEmail`, and calls `this.saveMessages(...)` so the email appears as a user turn. `saveMessages` runs a Think chat turn and waits for it to finish, then we reply to the original sender via `this.replyToEmail` with the assistant's text.
-
-### Try it
-
-After deploying and pointing your Routing rule at the Worker, send mail to any address on your domain — for example `hello@yourdomain.com`. Open the chat UI and you'll see the email appear as a user message followed by the assistant's response, and the sender will receive the reply in their inbox.
-
-### Switch routing strategies
-
-- **Address-based** — replace the resolver with `createAddressBasedEmailResolver("MyAgent")` to route `MyAgent+user123@yourdomain.com` to per-user agent instances.
-- **Secure replies** — pass a `secret` to `replyToEmail` and combine with `createSecureReplyEmailResolver(secret)` to verify HMAC-signed reply headers. Store the secret as a Worker [secret](https://developers.cloudflare.com/workers/configuration/secrets/) and read it from `this.env`.
-
-See the [Agents email docs](https://developers.cloudflare.com/agents/api-reference/email/) for the full resolver matrix.
-
-## Deploy
-
-```bash
-npm run deploy
-```
-
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
 
 ## Learn more
 
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
+- [Agents SDK](https://developers.cloudflare.com/agents/)
 - [Email for Agents](https://developers.cloudflare.com/agents/api-reference/email/)
 - [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)
 - [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
